@@ -2,7 +2,7 @@ trigger: none
 pr: none
 
 variables:
-  environment: 'dev'            
+  environment: 'dev'
   app_service_name: 'pradeep-app'
   app_resource_group: 'pradeep-rg'
   artifact_name: 'asp-artifact'
@@ -22,17 +22,14 @@ stages:
         deploy:
           steps:
 
-          - checkout: none
-
           # 1. Download artifact from CI
           - task: DownloadPipelineArtifact@2
-            displayName: 'Download asp-artifact from CI (runId 140)'
+            displayName: 'Download asp-artifact from CI'
             inputs:
               buildType: 'specific'
               project: '$(System.TeamProjectId)'
               pipeline: 'task_2_ci'
-              runVersion: 'specific'
-              runId: '140'
+              runVersion: 'latest'
               artifact: '$(artifact_name)'
               path: '$(Pipeline.Workspace)/asp-artifact'
 
@@ -52,30 +49,11 @@ stages:
               script: |
                 set -e
                 if ! command -v zip >/dev/null 2>&1; then
-                  echo "zip not found — installing..."
                   sudo apt-get update
                   sudo apt-get install -y zip
-                else
-                  echo "zip already available: $(zip -v | head -n 1)"
                 fi
 
-          # 3. Create ZIP package with flattened contents
-          - task: Bash@3
-            displayName: 'Create ZIP package of artifact'
-            inputs:
-              targetType: 'inline'
-              script: |
-                set -e
-                ART_DIR="$(Pipeline.Workspace)/asp-artifact"
-                cd "$ART_DIR"
-                rm -f "$(package_path)"
-                # Zip contents, not the folder itself, exclude node_modules
-                zip -r "$(package_path)" . -x "*/node_modules/*" -x "*/asp-artifact/*"
-                echo "Package created: $(package_path)"
-                echo "Contents of ZIP:"
-                unzip -l "$(package_path)"
-
-          # 4. Azure login via Managed Identity
+          # 3. Azure Login via Managed Identity
           - task: Bash@3
             displayName: 'Azure Login (Managed Identity)'
             inputs:
@@ -85,7 +63,7 @@ stages:
                 az login --identity
                 az account show
 
-          # 5. Deploy package to App Service
+          # 4. Deploy package to App Service using modern command
           - task: Bash@3
             displayName: 'Deploy package to App Service'
             inputs:
@@ -98,12 +76,13 @@ stages:
                   exit 1
                 fi
                 echo "Deploying package to App Service: $(app_service_name) in RG: $(app_resource_group)"
-                az webapp deployment source config-zip \
+                az webapp deploy \
                   --resource-group "$(app_resource_group)" \
                   --name "$(app_service_name)" \
-                  --src "$PKG_PATH"
+                  --src-path "$PKG_PATH" \
+                  --type zip
 
-          # 6. Verify App Service health
+          # 5. Verify App Service health
           - task: Bash@3
             displayName: 'Verify App Service is up'
             inputs:
@@ -112,7 +91,7 @@ stages:
                 set -e
                 APP_URL="https://$(app_service_name).azurewebsites.net"
                 ENDPOINTS=("/" "/api")
-                
+
                 for endpoint in "${ENDPOINTS[@]}"; do
                   echo "Checking ${APP_URL}${endpoint} (up to 5 attempts)"
                   i=0
