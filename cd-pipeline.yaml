@@ -1,0 +1,143 @@
+trigger:
+  - none
+ 
+variables:
+  environment: 'dev'            
+  app_service_name: 'dk-app-32516'
+  app_resource_group: 'dk-2-rg'
+  artifact_name: 'asp-artifact'
+  package_path: '$(Pipeline.Workspace)/asp-artifact.zip'
+ 
+# This pipeline uses a deployment job and an Azure DevOps Environment for approvals.
+# Create an environment matching '$(environment)-app' (for prod use 'prod-app' with approval checks).
+ 
+jobs:
+  - deployment: DeployApp
+    displayName: 'Deploy Express app to App Service (requires environment approval)'
+    environment: "$(environment)-app"
+    pool:
+      name: azure-agent-pool
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+ 
+            - checkout: none
+ 
+            - task: Bash@3
+              displayName: 'Download application artifact from CI'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -euo pipefail
+                  echo "Downloading artifact '$(artifact_name)'"
+                  mkdir -p "$(Pipeline.Workspace)/asp-artifact"
+                  az artifacts universal download --organization "$(System.CollectionUri)" || true
+                  # Use DownloadPipelineArtifact (artifact published by CI)
+                  echo "Using DownloadPipelineArtifact to fetch artifact"
+                  az devops configure --defaults organization=$(System.CollectionUri) project=$(System.TeamProject) || true
+                  # The DownloadPipelineArtifact task is more reliable; use it instead below if available.
+ 
+            - task: DownloadPipelineArtifact@2
+              displayName: 'Download application artifact (from CI)'
+              inputs:
+                buildType: 'specific'
+                project: '$(System.TeamProjectId)'
+                definition: 'ASP-CI'
+                buildVersionToDownload: 'latestFromBranch'
+                branchName: 'refs/heads/master'
+                artifact: '$(artifact_name)'
+                targetPath: '$(Pipeline.Workspace)/asp-artifact'
+ 
+            - task: Bash@3
+              displayName: 'Ensure zip is installed'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -e
+                  if ! command -v zip >/dev/null 2>&1; then
+                    echo "zip not found — installing..."
+                    sudo apt-get update
+                    sudo apt-get install -y zip
+                  else
+                    echo "zip already available: $(zip -v | head -n 1)"
+                  fi
+ 
+            - task: Bash@3
+              displayName: 'Create ZIP package of artifact'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -e
+                  ART_DIR="$(Pipeline.Workspace)/asp-artifact"
+                  if [ ! -d "$ART_DIR" ]; then
+                    echo "Artifact folder not found: $ART_DIR"
+                    ls -la "$(Pipeline.Workspace)" || true
+                    exit 1
+                  fi
+                  cd "$ART_DIR"
+                  rm -f "$(package_path)"
+                  zip -r "$(package_path)" . -x "*/node_modules/*"
+                  echo "Package created: $(package_path)"
+ 
+            - task: Bash@3
+              displayName: 'Azure Login (Managed Identity)'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -e
+                  az login --identity
+                  az account show
+ 
+            - task: Bash@3
+              displayName: 'Deploy package to App Service (using az CLI)'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -e
+                  PKG_PATH="$(package_path)"
+                  if [ ! -f "$PKG_PATH" ]; then
+                    echo "Package not found: $PKG_PATH"
+                    exit 1
+                  fi
+ 
+                  echo "Deploying package to App Service: $(app_service_name) in RG: $(app_resource_group)"
+                  az webapp deployment source config-zip \
+                    --resource-group "$(app_resource_group)" \
+                    --name "$(app_service_name)" \
+                    --src "$PKG_PATH"
+ 
+            - task: Bash@3
+              displayName: 'Verify App Service is up'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -e
+                  APP_URL="https://$(app_service_name).azurewebsites.net"
+                  echo "Checking ${APP_URL} (up to 5 attempts)"
+                  i=0
+                  until [ $i -ge 5 ]
+                  do
+                    status=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/health" || true)
+                    if [ "$status" = "200" ] || [ "$status" = "302" ] || [ "$status" = "000" ]; then
+                      echo "App responded with HTTP $status"
+                      exit 0
+                    fi
+                    i=$((i+1))
+                    echo "Attempt $i: app not responding (HTTP $status). Waiting 10s..."
+                    sleep 10
+                  done
+                  echo "App did not respond successfully after retries"
+                  exit 1
+ 
+            # NOTE: If you prefer to use the 'App Service Deploy' marketplace task (AzureWebApp@1),
+            # replace the az CLI deploy step above with the AzureWebApp task and provide an
+            # Azure Resource Manager service connection (azureSubscription input). Example:
+            #
+            # - task: AzureWebApp@1
+            #   inputs:
+            #     azureSubscription: '<service-connection-name>'
+            #     appName: '$(app_service_name)'
+            #     package: '$(package_path)'
+ 
+ 
