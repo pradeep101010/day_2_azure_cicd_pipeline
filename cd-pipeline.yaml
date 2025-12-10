@@ -1,5 +1,8 @@
-trigger: none
-pr: none
+trigger:
+  none
+
+pr:
+  none
 
 variables:
   environment: 'dev'
@@ -10,11 +13,12 @@ variables:
 
 stages:
 - stage: Deploy
-  displayName: CD - Deploy App
+  displayName: 'CD - Deploy App'
   jobs:
   - deployment: DeployApp
-    displayName: Deploy Application
-    environment: '$(environment)-app'
+    displayName: 'Deploy Application'
+    environment:
+      name: '$(environment)-app'
     pool:
       name: 'pradeep-pool'
     strategy:
@@ -26,74 +30,48 @@ stages:
           - task: DownloadPipelineArtifact@2
             displayName: 'Download asp-artifact from CI'
             inputs:
-              buildType: 'specific'
-              project: '$(System.TeamProjectId)'
-              pipeline: 'task_2_ci'
-              runVersion: 'latest'
+              buildType: 'latest'
               artifact: '$(artifact_name)'
               path: '$(Pipeline.Workspace)/asp-artifact'
 
+          # 2. Show downloaded artifact
           - task: Bash@3
-            displayName: 'Show downloaded artifact'
+            displayName: 'Show artifact contents'
             inputs:
               targetType: 'inline'
               script: |
-                echo "Downloaded contents:"
                 ls -R $(Pipeline.Workspace)/asp-artifact
 
-          # 2. Ensure zip is installed
+          # 3. Azure Login (Managed Identity)
           - task: Bash@3
-            displayName: 'Ensure zip is installed'
+            displayName: 'Azure Login'
             inputs:
               targetType: 'inline'
               script: |
-                set -e
-                if ! command -v zip >/dev/null 2>&1; then
-                  sudo apt-get update
-                  sudo apt-get install -y zip
-                fi
-
-          # 3. Azure Login via Managed Identity
-          - task: Bash@3
-            displayName: 'Azure Login (Managed Identity)'
-            inputs:
-              targetType: 'inline'
-              script: |
-                set -e
                 az login --identity
                 az account show
 
-          # 4. Deploy package to App Service using modern command
+          # 4. Deploy package to App Service
           - task: Bash@3
             displayName: 'Deploy package to App Service'
             inputs:
               targetType: 'inline'
               script: |
-                set -e
-                PKG_PATH="$(package_path)"
-                if [ ! -f "$PKG_PATH" ]; then
-                  echo "Package not found: $PKG_PATH"
-                  exit 1
-                fi
-                echo "Deploying package to App Service: $(app_service_name) in RG: $(app_resource_group)"
-                az webapp deploy \
+                PKG_PATH="$(Pipeline.Workspace)/asp-artifact.zip"
+                az webapp deployment source config-zip \
                   --resource-group "$(app_resource_group)" \
                   --name "$(app_service_name)" \
-                  --src-path "$PKG_PATH" \
-                  --type zip
+                  --src "$PKG_PATH"
 
-          # 5. Verify App Service health
+          # 5. Verify App Service endpoints
           - task: Bash@3
             displayName: 'Verify App Service is up'
             inputs:
               targetType: 'inline'
               script: |
-                set -e
                 APP_URL="https://$(app_service_name).azurewebsites.net"
-                ENDPOINTS=("/" "/api")
-
+                ENDPOINTS=("/" "/api" "/health")
                 for endpoint in "${ENDPOINTS[@]}"; do
-                  echo "Checking ${APP_URL}${endpoint} (up to 5 attempts)"
                   i=0
                   until [ $i -ge 5 ]; do
                     status=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL$endpoint")
@@ -102,13 +80,11 @@ stages:
                       break
                     fi
                     i=$((i+1))
-                    echo "Attempt $i: $endpoint not responding (HTTP $status). Waiting 10s..."
                     sleep 10
                   done
                   if [ "$i" -eq 5 ]; then
-                    echo "$endpoint did not respond successfully after retries"
+                    echo "$endpoint failed to respond"
                     exit 1
                   fi
                 done
-
                 echo "All endpoints are healthy ✅"
