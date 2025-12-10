@@ -1,10 +1,6 @@
 trigger: none
 pr: none
 
-variables:
-  # Secret variable containing your private key
-  SSH_PRIVATE_KEY: $(SSH_PRIVATE_KEY)   # Add this in pipeline UI as secret
-
 stages:
 - stage: Deploy
   displayName: CD - Deploy App
@@ -34,16 +30,19 @@ stages:
               path: '$(Pipeline.Workspace)/asp-app'
 
           # 2. Show artifact contents
-          - task: CmdLine@2
+          - task: Bash@3
             displayName: 'Show downloaded artifact'
             inputs:
+              targetType: 'inline'
               script: |
                 echo "Downloaded contents:"
                 ls -R $(Pipeline.Workspace)/asp-app
 
-          # 3. Setup SSH key from secret
+          # 3. Setup SSH key from secret (inject as environment variable)
           - task: Bash@3
             displayName: 'Setup SSH key for pipeline'
+            env:
+              SSH_PRIVATE_KEY: $(SSH_PRIVATE_KEY)  # reference secret variable here
             inputs:
               targetType: 'inline'
               script: |
