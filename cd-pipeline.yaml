@@ -1,114 +1,125 @@
-trigger:
-  - none
+trigger: none
+pr: none
 
 variables:
   environment: 'dev'            
-  app_service_name: 'pradeep-app-32516'
-  app_resource_group: 'pradeep-2-rg'
+  app_service_name: 'dk-app-32516'
+  app_resource_group: 'dk-2-rg'
   artifact_name: 'asp-artifact'
   package_path: '$(Pipeline.Workspace)/asp-artifact.zip'
 
-jobs:
+stages:
+- stage: Deploy
+  displayName: CD - Deploy App
+  jobs:
   - deployment: DeployApp
-    displayName: 'Deploy Express app to App Service (requires environment approval)'
-    environment: "$(environment)-app"
+    displayName: Deploy Application
+    environment: '$(environment)-app'
     pool:
-      name: pradeep-pool
+      name: 'pradeep-pool'
     strategy:
       runOnce:
         deploy:
           steps:
 
-            - checkout: none
+          - checkout: none
 
-            # 1. Download artifact from CI
-            - task: DownloadPipelineArtifact@2
-              displayName: 'Download application artifact from CI'
-              inputs:
-                buildType: 'specific'
-                project: '$(System.TeamProjectId)'
-                definition: 'task_2_ci'
-                buildVersionToDownload: 'latestFromBranch'
-                branchName: 'refs/heads/master'
-                artifact: '$(artifact_name)'
-                targetPath: '$(Pipeline.Workspace)/asp-artifact'
+          # 1. Download artifact from CI using runId
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download asp-artifact from CI (runId 140)'
+            inputs:
+              buildType: 'specific'
+              project: '$(System.TeamProjectId)'
+              pipeline: 'task_2_ci'
+              runVersion: 'specific'
+              runId: '140'
+              artifact: '$(artifact_name)'
+              path: '$(Pipeline.Workspace)/asp-artifact'
 
-            # 2. Ensure zip is installed
-            - task: Bash@3
-              displayName: 'Ensure zip is installed'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  set -e
-                  if ! command -v zip >/dev/null 2>&1; then
-                    echo "zip not found — installing..."
-                    sudo apt-get update
-                    sudo apt-get install -y zip
-                  else
-                    echo "zip already available: $(zip -v | head -n 1)"
-                  fi
+          - task: Bash@3
+            displayName: 'Show downloaded artifact'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Downloaded contents:"
+                ls -R $(Pipeline.Workspace)/asp-artifact
 
-            # 3. Create ZIP package of artifact
-            - task: Bash@3
-              displayName: 'Create ZIP package of artifact'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  set -e
-                  ART_DIR="$(Pipeline.Workspace)/asp-artifact"
-                  cd "$ART_DIR"
-                  rm -f "$(package_path)"
-                  zip -r "$(package_path)" . -x "*/node_modules/*"
-                  echo "Package created: $(package_path)"
+          # 2. Ensure zip is installed
+          - task: Bash@3
+            displayName: 'Ensure zip is installed'
+            inputs:
+              targetType: 'inline'
+              script: |
+                set -e
+                if ! command -v zip >/dev/null 2>&1; then
+                  echo "zip not found — installing..."
+                  sudo apt-get update
+                  sudo apt-get install -y zip
+                else
+                  echo "zip already available: $(zip -v | head -n 1)"
+                fi
 
-            # 4. Azure login via Managed Identity
-            - task: Bash@3
-              displayName: 'Azure Login (Managed Identity)'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  set -e
-                  az login --identity
-                  az account show
+          # 3. Create ZIP package of artifact
+          - task: Bash@3
+            displayName: 'Create ZIP package of artifact'
+            inputs:
+              targetType: 'inline'
+              script: |
+                set -e
+                ART_DIR="$(Pipeline.Workspace)/asp-artifact"
+                cd "$ART_DIR"
+                rm -f "$(package_path)"
+                zip -r "$(package_path)" . -x "*/node_modules/*"
+                echo "Package created: $(package_path)"
 
-            # 5. Deploy package to App Service
-            - task: Bash@3
-              displayName: 'Deploy package to App Service (using az CLI)'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  set -e
-                  PKG_PATH="$(package_path)"
-                  if [ ! -f "$PKG_PATH" ]; then
-                    echo "Package not found: $PKG_PATH"
-                    exit 1
-                  fi
-                  echo "Deploying package to App Service: $(app_service_name) in RG: $(app_resource_group)"
-                  az webapp deployment source config-zip \
-                    --resource-group "$(app_resource_group)" \
-                    --name "$(app_service_name)" \
-                    --src "$PKG_PATH"
+          # 4. Azure login via Managed Identity
+          - task: Bash@3
+            displayName: 'Azure Login (Managed Identity)'
+            inputs:
+              targetType: 'inline'
+              script: |
+                set -e
+                az login --identity
+                az account show
 
-            # 6. Verify App Service health
-            - task: Bash@3
-              displayName: 'Verify App Service is up'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  set -e
-                  APP_URL="https://$(app_service_name).azurewebsites.net"
-                  echo "Checking ${APP_URL} (up to 5 attempts)"
-                  i=0
-                  until [ $i -ge 5 ]
-                  do
-                    status=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/health" || true)
-                    if [ "$status" = "200" ] || [ "$status" = "302" ] || [ "$status" = "000" ]; then
-                      echo "App responded with HTTP $status"
-                      exit 0
-                    fi
-                    i=$((i+1))
-                    echo "Attempt $i: app not responding (HTTP $status). Waiting 10s..."
-                    sleep 10
-                  done
-                  echo "App did not respond successfully after retries"
+          # 5. Deploy package to App Service
+          - task: Bash@3
+            displayName: 'Deploy package to App Service'
+            inputs:
+              targetType: 'inline'
+              script: |
+                set -e
+                PKG_PATH="$(package_path)"
+                if [ ! -f "$PKG_PATH" ]; then
+                  echo "Package not found: $PKG_PATH"
                   exit 1
+                fi
+                echo "Deploying package to App Service: $(app_service_name) in RG: $(app_resource_group)"
+                az webapp deployment source config-zip \
+                  --resource-group "$(app_resource_group)" \
+                  --name "$(app_service_name)" \
+                  --src "$PKG_PATH"
+
+          # 6. Verify App Service health
+          - task: Bash@3
+            displayName: 'Verify App Service is up'
+            inputs:
+              targetType: 'inline'
+              script: |
+                set -e
+                APP_URL="https://$(app_service_name).azurewebsites.net"
+                echo "Checking ${APP_URL} (up to 5 attempts)"
+                i=0
+                until [ $i -ge 5 ]
+                do
+                  status=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/health" || true)
+                  if [ "$status" = "200" ] || [ "$status" = "302" ] || [ "$status" = "000" ]; then
+                    echo "App responded with HTTP $status"
+                    exit 0
+                  fi
+                  i=$((i+1))
+                  echo "Attempt $i: app not responding (HTTP $status). Waiting 10s..."
+                  sleep 10
+                done
+                echo "App did not respond successfully after retries"
+                exit 1
