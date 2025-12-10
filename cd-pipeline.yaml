@@ -1,72 +1,57 @@
 trigger: none
+pr: none
 
-variables:
-  environment: 'dev'
-  app_service_name: 'pradeep-app-53426'
-  app_resource_group: 'pradeep-2-rg'
-  artifact_name: 'asp-artifact'
-  package_path: '$(Pipeline.Workspace)/asp-artifact.zip'
+stages:
+- stage: Deploy
+  displayName: CD - Deploy App
+  jobs:
+  - deployment: DeployApp
+    displayName: Deploy Application
+    environment:
+      name: 'dev-env'
+    pool:
+      name: 'pradeep-pool'
 
-jobs:
-- deployment: DeployApp
-  displayName: 'CD Deployment to App Service'
-  environment: "$(environment)-app"
-  pool:
-    name: pradeep-pool
-  strategy:
-    runOnce:
-      deploy:
-        steps:
+    strategy:
+      runOnce:
+        deploy:
+          steps:
 
-        - checkout: none
+          # 1. Download artifact using buildId like your working example
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download asp-artifact from CI'
+            inputs:
+              buildType: 'specific'
+              project: '$(System.TeamProjectId)'
+              pipeline: 'task_2_ci'         # your CI pipeline
+              runVersion: 'specific'
+              runId: '140'                  # <-- YOUR BUILD ID
+              artifact: 'asp-artifact'
+              path: '$(Pipeline.Workspace)/asp-app'
 
-        # ✅ Correct way to fetch CI artifacts
-        - task: DownloadPipelineArtifact@2
-          displayName: 'Download artifact from CI (task_2_ci)'
-          inputs:
-            buildType: 'latest'
-            project: '$(System.TeamProjectId)'
-            definition: 'task_2_ci'        # CI pipeline name
-            artifactName: 'asp-artifact'   # CI artifact name
-            targetPath: '$(Pipeline.Workspace)/asp-artifact'
+          # 2. Show artifact contents
+          - task: CmdLine@2
+            displayName: 'Show downloaded artifact'
+            inputs:
+              script: |
+                echo "Downloaded contents:"
+                ls -R $(Pipeline.Workspace)/asp-app
 
-        - task: Bash@3
-          displayName: 'Ensure zip installed'
-          inputs:
-            targetType: 'inline'
-            script: |
-              set -e
-              if ! command -v zip >/dev/null 2>&1; then
-                sudo apt-get update
-                sudo apt-get install -y zip
-              fi
+          # 3. Manual SSH Deployment (NO service connection)
+          - task: CmdLine@2
+            displayName: 'Deploy App to Linux VM'
+            inputs:
+              script: |
+                echo "Starting manual SSH deployment..."
 
-        - task: Bash@3
-          displayName: 'Create zip package'
-          inputs:
-            targetType: 'inline'
-            script: |
-              ART_DIR="$(Pipeline.Workspace)/asp-artifact"
-              echo "Artifact folder:"
-              ls -la "$ART_DIR"
-              cd "$ART_DIR"
-              zip -r "$(package_path)" . -x "*/node_modules/*"
+                VM_USER="azureuser"
+                VM_HOST="51.8.104.126"
+                VM_PATH="/var/www/myapp"
 
-        - bash: |
-            az login --identity
-            az account show
-          displayName: "Azure Login"
+                echo "Copying app files..."
+                scp -o StrictHostKeyChecking=no -r $(Pipeline.Workspace)/asp-app/* $VM_USER@$VM_HOST:$VM_PATH/
 
-        - bash: |
-            echo "Deploying to App Service..."
-            az webapp deployment source config-zip \
-              --resource-group "$(app_resource_group)" \
-              --name "$(app_service_name)" \
-              --src "$(package_path)"
-          displayName: "Deploy ZIP to App Service"
+                echo "Restarting application..."
+                ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "sudo systemctl restart myapp.service"
 
-        - bash: |
-            APP_URL="https://$(app_service_name).azurewebsites.net"
-            echo "Checking health: $APP_URL/health"
-            curl -I "$APP_URL"
-          displayName: "Verify Deployment"
+                echo "Deployment completed successfully!"
