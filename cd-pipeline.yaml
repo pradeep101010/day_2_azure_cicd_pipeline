@@ -3,8 +3,8 @@ pr: none
 
 variables:
   environment: 'dev'            
-  app_service_name: 'dk-app-32516'
-  app_resource_group: 'dk-2-rg'
+  app_service_name: 'pradeep-app-32516'
+  app_resource_group: 'pradeep-2-rg'
   artifact_name: 'asp-artifact'
   package_path: '$(Pipeline.Workspace)/asp-artifact.zip'
 
