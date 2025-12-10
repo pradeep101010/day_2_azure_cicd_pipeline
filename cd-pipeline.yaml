@@ -24,7 +24,7 @@ stages:
 
           - checkout: none
 
-          # 1. Download artifact from CI using runId
+          # 1. Download artifact from CI
           - task: DownloadPipelineArtifact@2
             displayName: 'Download asp-artifact from CI (runId 140)'
             inputs:
@@ -59,7 +59,7 @@ stages:
                   echo "zip already available: $(zip -v | head -n 1)"
                 fi
 
-          # 3. Create ZIP package of artifact
+          # 3. Create ZIP package with flattened contents
           - task: Bash@3
             displayName: 'Create ZIP package of artifact'
             inputs:
@@ -69,8 +69,11 @@ stages:
                 ART_DIR="$(Pipeline.Workspace)/asp-artifact"
                 cd "$ART_DIR"
                 rm -f "$(package_path)"
-                zip -r "$(package_path)" . -x "*/node_modules/*"
+                # Zip contents, not the folder itself, exclude node_modules
+                zip -r "$(package_path)" . -x "*/node_modules/*" -x "*/asp-artifact/*"
                 echo "Package created: $(package_path)"
+                echo "Contents of ZIP:"
+                unzip -l "$(package_path)"
 
           # 4. Azure login via Managed Identity
           - task: Bash@3
@@ -100,7 +103,7 @@ stages:
                   --name "$(app_service_name)" \
                   --src "$PKG_PATH"
 
-          # 6. Verify App Service health (check both / and /api)
+          # 6. Verify App Service health
           - task: Bash@3
             displayName: 'Verify App Service is up'
             inputs:
