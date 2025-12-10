@@ -1,8 +1,7 @@
 // index.js
-
 const http = require("http");
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000; // Use Azure's PORT env variable
 
 const server = http.createServer((req, res) => {
     if (req.url === "/") {
@@ -14,10 +13,9 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ message: "API is working!", status: "success" }));
     }
     else if (req.url === "/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok" }));
-}
-
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+    }
     else {
         res.writeHead(404, { "Content-Type": "text/plain" });
         res.end("Not Found");
