@@ -27,7 +27,7 @@ jobs:
               inputs:
                 buildType: 'specific'
                 project: '$(System.TeamProjectId)'
-                definition: 'ASP-CI'
+                definition: 'task_2_ci'
                 buildVersionToDownload: 'latestFromBranch'
                 branchName: 'refs/heads/master'
                 artifact: '$(artifact_name)'
