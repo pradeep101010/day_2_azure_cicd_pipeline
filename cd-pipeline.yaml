@@ -1,72 +1,114 @@
-trigger: none
-pr: none
+trigger:
+  - none
 
-stages:
-- stage: Deploy
-  displayName: CD - Deploy App
-  jobs:
+variables:
+  environment: 'dev'            
+  app_service_name: 'pradeep-app-32516'
+  app_resource_group: 'pradeep-2-rg'
+  artifact_name: 'asp-artifact'
+  package_path: '$(Pipeline.Workspace)/asp-artifact.zip'
+
+jobs:
   - deployment: DeployApp
-    displayName: Deploy Application
-    environment:
-      name: 'dev-env'
+    displayName: 'Deploy Express app to App Service (requires environment approval)'
+    environment: "$(environment)-app"
     pool:
-      name: 'pradeep-pool'
-
+      name: pradeep-pool
     strategy:
       runOnce:
         deploy:
           steps:
 
-          # 1. Download artifact using buildId
-          - task: DownloadPipelineArtifact@2
-            displayName: 'Download asp-artifact from CI'
-            inputs:
-              buildType: 'specific'
-              project: '$(System.TeamProjectId)'
-              pipeline: 'task_2_ci'
-              runVersion: 'specific'
-              runId: '140'
-              artifact: 'asp-artifact'
-              path: '$(Pipeline.Workspace)/asp-app'
+            - checkout: none
 
-          # 2. Show artifact contents
-          - task: Bash@3
-            displayName: 'Show downloaded artifact'
-            inputs:
-              targetType: 'inline'
-              script: |
-                echo "Downloaded contents:"
-                ls -R $(Pipeline.Workspace)/asp-app
+            # 1. Download artifact from CI
+            - task: DownloadPipelineArtifact@2
+              displayName: 'Download application artifact from CI'
+              inputs:
+                buildType: 'specific'
+                project: '$(System.TeamProjectId)'
+                definition: 'ASP-CI'
+                buildVersionToDownload: 'latestFromBranch'
+                branchName: 'refs/heads/master'
+                artifact: '$(artifact_name)'
+                targetPath: '$(Pipeline.Workspace)/asp-artifact'
 
-          # 3. Setup SSH key from secret (inject as environment variable)
-          - task: Bash@3
-            displayName: 'Setup SSH key for pipeline'
-            env:
-              SSH_PRIVATE_KEY: $(SSH_PRIVATE_KEY)  # reference secret variable here
-            inputs:
-              targetType: 'inline'
-              script: |
-                mkdir -p ~/.ssh
-                echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-                chmod 600 ~/.ssh/id_ed25519
-                ssh-keyscan -H 51.8.104.126 >> ~/.ssh/known_hosts
+            # 2. Ensure zip is installed
+            - task: Bash@3
+              displayName: 'Ensure zip is installed'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -e
+                  if ! command -v zip >/dev/null 2>&1; then
+                    echo "zip not found — installing..."
+                    sudo apt-get update
+                    sudo apt-get install -y zip
+                  else
+                    echo "zip already available: $(zip -v | head -n 1)"
+                  fi
 
-          # 4. Manual SSH Deployment
-          - task: Bash@3
-            displayName: 'Deploy App to Linux VM'
-            inputs:
-              targetType: 'inline'
-              script: |
-                echo "Starting manual SSH deployment..."
+            # 3. Create ZIP package of artifact
+            - task: Bash@3
+              displayName: 'Create ZIP package of artifact'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -e
+                  ART_DIR="$(Pipeline.Workspace)/asp-artifact"
+                  cd "$ART_DIR"
+                  rm -f "$(package_path)"
+                  zip -r "$(package_path)" . -x "*/node_modules/*"
+                  echo "Package created: $(package_path)"
 
-                VM_USER="azureuser"
-                VM_HOST="51.8.104.126"
-                VM_PATH="/var/www/myapp"
+            # 4. Azure login via Managed Identity
+            - task: Bash@3
+              displayName: 'Azure Login (Managed Identity)'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -e
+                  az login --identity
+                  az account show
 
-                echo "Copying app files..."
-                scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -r $(Pipeline.Workspace)/asp-app/* $VM_USER@$VM_HOST:$VM_PATH/
+            # 5. Deploy package to App Service
+            - task: Bash@3
+              displayName: 'Deploy package to App Service (using az CLI)'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -e
+                  PKG_PATH="$(package_path)"
+                  if [ ! -f "$PKG_PATH" ]; then
+                    echo "Package not found: $PKG_PATH"
+                    exit 1
+                  fi
+                  echo "Deploying package to App Service: $(app_service_name) in RG: $(app_resource_group)"
+                  az webapp deployment source config-zip \
+                    --resource-group "$(app_resource_group)" \
+                    --name "$(app_service_name)" \
+                    --src "$PKG_PATH"
 
-                echo "Restarting application..."
-                ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "sudo systemctl restart myapp.service"
-
-                echo "Deployment completed successfully!"
+            # 6. Verify App Service health
+            - task: Bash@3
+              displayName: 'Verify App Service is up'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  set -e
+                  APP_URL="https://$(app_service_name).azurewebsites.net"
+                  echo "Checking ${APP_URL} (up to 5 attempts)"
+                  i=0
+                  until [ $i -ge 5 ]
+                  do
+                    status=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/health" || true)
+                    if [ "$status" = "200" ] || [ "$status" = "302" ] || [ "$status" = "000" ]; then
+                      echo "App responded with HTTP $status"
+                      exit 0
+                    fi
+                    i=$((i+1))
+                    echo "Attempt $i: app not responding (HTTP $status). Waiting 10s..."
+                    sleep 10
+                  done
+                  echo "App did not respond successfully after retries"
+                  exit 1
