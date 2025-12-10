@@ -4,6 +4,7 @@ trigger:
 variables:
   TF_VERSION: '1.6.6'
   environment: 'dev'        # dev or prod
+  artifact_name: 'asp-artifact'
 
 pool:
   name: 'pradeep-pool'
@@ -13,7 +14,7 @@ steps:
 # 1. Checkout repository
 - checkout: self
 
-# 2. Setup Node (ensure node present on agent)
+# 2. Setup Node.js
 - task: NodeTool@0
   displayName: 'Use Node.js 18.x'
   inputs:
@@ -28,14 +29,12 @@ steps:
       set -e
       cd app
       if [ -f package-lock.json ]; then
-        echo 'Found package-lock.json — running npm ci'
         npm ci
       else
-        echo 'No package-lock.json — running npm install'
         npm install
       fi
 
-# 4. Build the application (if a build script exists)
+# 4. Build the application
 - task: Bash@3
   displayName: 'Build application (if applicable)'
   inputs:
@@ -43,14 +42,11 @@ steps:
     script: |
       set -e
       cd app
-      if [ -f package.json ] && grep -q '"build"' package.json; then
-        echo 'Running npm run build'
+      if grep -q '"build"' package.json; then
         npm run build
-      else
-        echo 'No build script found, skipping build'
       fi
 
-# 5. Prepare artifact staging directory
+# 5. Prepare artifact directory
 - task: Bash@3
   displayName: 'Package application artifact'
   inputs:
@@ -60,34 +56,23 @@ steps:
       ART_DIR="$(Build.ArtifactStagingDirectory)/asp-artifact"
       rm -rf "$ART_DIR"
       mkdir -p "$ART_DIR"
-
-      # Copy application files into artifact directory (flatten structure)
       cp -R app/* "$ART_DIR/"
-
-      # Remove node_modules if present
       rm -rf "$ART_DIR/node_modules"
-
-      # Include package-lock.json for reproducibility
       if [ -f app/package-lock.json ]; then
         cp app/package-lock.json "$ART_DIR/"
       fi
 
-      echo 'Artifact contents:'
-      ls -al "$ART_DIR"
-
-# 6. Zip artifact (optional if you plan to deploy via ZIP)
+# 6. Zip artifact
 - task: Bash@3
   displayName: 'Create ZIP of artifact'
   inputs:
     targetType: 'inline'
     script: |
-      set -e
       ART_DIR="$(Build.ArtifactStagingDirectory)/asp-artifact"
       ZIP_PATH="$(Build.ArtifactStagingDirectory)/asp-artifact.zip"
       cd "$ART_DIR"
       zip -r "$ZIP_PATH" . -x "node_modules/*"
       echo "ZIP created at $ZIP_PATH"
-      unzip -l "$ZIP_PATH"
 
 # 7. Publish artifact
 - task: PublishBuildArtifacts@1
