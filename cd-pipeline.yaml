@@ -26,11 +26,15 @@ stages:
         deploy:
           steps:
 
-          # 1. Download artifact from CI
+          # 1. Download artifact from CI (BUILD ID = 160)
           - task: DownloadPipelineArtifact@2
-            displayName: 'Download asp-artifact from CI'
+            displayName: 'Download asp-artifact from CI (RunID 160)'
             inputs:
-              buildType: 'latest'
+              buildType: 'specific'
+              project: '$(System.TeamProjectId)'
+              pipeline: 'task_2_ci'
+              runVersion: 'specific'
+              runId: '160'
               artifact: '$(artifact_name)'
               path: '$(Pipeline.Workspace)/asp-artifact'
 
@@ -40,9 +44,51 @@ stages:
             inputs:
               targetType: 'inline'
               script: |
+                echo "Downloaded artifact structure:"
                 ls -R $(Pipeline.Workspace)/asp-artifact
 
-          # 3. Azure Login (Managed Identity)
+          # 3. Normalize folder structure (root vs subfolder)
+          - task: Bash@3
+            displayName: 'Normalize artifact structure'
+            inputs:
+              targetType: 'inline'
+              script: |
+                set -e
+
+                ART_ROOT="$(Pipeline.Workspace)/asp-artifact"
+                TMP_ROOT="$(Pipeline.Workspace)/asp-artifact_normalized"
+
+                rm -rf "$TMP_ROOT"
+                mkdir -p "$TMP_ROOT"
+
+                echo "Checking for package.json in root..."
+                if [ -f "$ART_ROOT/package.json" ]; then
+                  echo "package.json found in root → using root files"
+                  cp -R "$ART_ROOT/"* "$TMP_ROOT/"
+                else
+                  echo "package.json NOT found in root → searching subfolders..."
+                  SUBFOLDER=$(find "$ART_ROOT" -type f -name "package.json" | head -n 1 | xargs dirname)
+
+                  if [ -z "$SUBFOLDER" ]; then
+                    echo "ERROR: package.json not found anywhere!"
+                    exit 1
+                  fi
+
+                  echo "Found package.json inside: $SUBFOLDER"
+                  cp -R "$SUBFOLDER/"* "$TMP_ROOT/"
+                fi
+
+                echo "Final normalized structure:"
+                ls -R "$TMP_ROOT"
+
+                # Zip everything
+                cd "$TMP_ROOT"
+                zip -r "$(Pipeline.Workspace)/asp-artifact.zip" . -x "node_modules/*"
+
+                echo "Final ZIP created:"
+                unzip -l "$(Pipeline.Workspace)/asp-artifact.zip"
+
+          # 4. Azure Login (Managed Identity)
           - task: Bash@3
             displayName: 'Azure Login'
             inputs:
@@ -51,19 +97,21 @@ stages:
                 az login --identity
                 az account show
 
-          # 4. Deploy package to App Service
+          # 5. Deploy package to App Service
           - task: Bash@3
             displayName: 'Deploy package to App Service'
             inputs:
               targetType: 'inline'
               script: |
                 PKG_PATH="$(Pipeline.Workspace)/asp-artifact.zip"
+                echo "Deploying ZIP: $PKG_PATH"
+
                 az webapp deployment source config-zip \
                   --resource-group "$(app_resource_group)" \
                   --name "$(app_service_name)" \
                   --src "$PKG_PATH"
 
-          # 5. Verify App Service endpoints
+          # 6. Verify App Service endpoints
           - task: Bash@3
             displayName: 'Verify App Service is up'
             inputs:
@@ -71,6 +119,7 @@ stages:
               script: |
                 APP_URL="https://$(app_service_name).azurewebsites.net"
                 ENDPOINTS=("/" "/api" "/health")
+
                 for endpoint in "${ENDPOINTS[@]}"; do
                   i=0
                   until [ $i -ge 5 ]; do
@@ -82,9 +131,11 @@ stages:
                     i=$((i+1))
                     sleep 10
                   done
+
                   if [ "$i" -eq 5 ]; then
                     echo "$endpoint failed to respond"
                     exit 1
                   fi
                 done
+
                 echo "All endpoints are healthy ✅"
