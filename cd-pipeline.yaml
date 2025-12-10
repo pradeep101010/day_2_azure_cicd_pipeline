@@ -1,6 +1,10 @@
 trigger: none
 pr: none
 
+variables:
+  # Secret variable containing your private key
+  SSH_PRIVATE_KEY: $(SSH_PRIVATE_KEY)   # Add this in pipeline UI as secret
+
 stages:
 - stage: Deploy
   displayName: CD - Deploy App
@@ -17,15 +21,15 @@ stages:
         deploy:
           steps:
 
-          # 1. Download artifact using buildId like your working example
+          # 1. Download artifact using buildId
           - task: DownloadPipelineArtifact@2
             displayName: 'Download asp-artifact from CI'
             inputs:
               buildType: 'specific'
               project: '$(System.TeamProjectId)'
-              pipeline: 'task_2_ci'         # your CI pipeline
+              pipeline: 'task_2_ci'
               runVersion: 'specific'
-              runId: '140'                  # <-- YOUR BUILD ID
+              runId: '140'
               artifact: 'asp-artifact'
               path: '$(Pipeline.Workspace)/asp-app'
 
@@ -37,10 +41,22 @@ stages:
                 echo "Downloaded contents:"
                 ls -R $(Pipeline.Workspace)/asp-app
 
-          # 3. Manual SSH Deployment (NO service connection)
-          - task: CmdLine@2
+          # 3. Setup SSH key from secret
+          - task: Bash@3
+            displayName: 'Setup SSH key for pipeline'
+            inputs:
+              targetType: 'inline'
+              script: |
+                mkdir -p ~/.ssh
+                echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+                chmod 600 ~/.ssh/id_ed25519
+                ssh-keyscan -H 51.8.104.126 >> ~/.ssh/known_hosts
+
+          # 4. Manual SSH Deployment
+          - task: Bash@3
             displayName: 'Deploy App to Linux VM'
             inputs:
+              targetType: 'inline'
               script: |
                 echo "Starting manual SSH deployment..."
 
@@ -49,9 +65,9 @@ stages:
                 VM_PATH="/var/www/myapp"
 
                 echo "Copying app files..."
-                scp -o StrictHostKeyChecking=no -r $(Pipeline.Workspace)/asp-app/* $VM_USER@$VM_HOST:$VM_PATH/
+                scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -r $(Pipeline.Workspace)/asp-app/* $VM_USER@$VM_HOST:$VM_PATH/
 
                 echo "Restarting application..."
-                ssh -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "sudo systemctl restart myapp.service"
+                ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no $VM_USER@$VM_HOST "sudo systemctl restart myapp.service"
 
                 echo "Deployment completed successfully!"
