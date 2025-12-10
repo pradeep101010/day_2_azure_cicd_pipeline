@@ -1,136 +1,72 @@
-trigger:
-  - none
- 
+trigger: none
+
 variables:
-  environment: 'dev'            
+  environment: 'dev'
   app_service_name: 'pradeep-app-53426'
   app_resource_group: 'pradeep-2-rg'
   artifact_name: 'asp-artifact'
-  ci_build_id: 140                     # <== CI RUN ID TO DOWNLOAD
   package_path: '$(Pipeline.Workspace)/asp-artifact.zip'
- 
+
 jobs:
-  - deployment: DeployApp
-    displayName: 'Deploy Express app to App Service'
-    environment: "$(environment)-app"
-    pool:
-      name: pradeep-pool
+- deployment: DeployApp
+  displayName: 'CD Deployment to App Service'
+  environment: "$(environment)-app"
+  pool:
+    name: pradeep-pool
+  strategy:
+    runOnce:
+      deploy:
+        steps:
 
-    strategy:
-      runOnce:
-        deploy:
-          steps:
+        - checkout: none
 
-            # No checkout needed
-            - checkout: none
+        # ✅ Correct way to fetch CI artifacts
+        - task: DownloadPipelineArtifact@2
+          displayName: 'Download artifact from CI (task_2_ci)'
+          inputs:
+            buildType: 'latest'
+            project: '$(System.TeamProjectId)'
+            definition: 'task_2_ci'        # CI pipeline name
+            artifactName: 'asp-artifact'   # CI artifact name
+            targetPath: '$(Pipeline.Workspace)/asp-artifact'
 
-            # --------------------------------------------
-            # STEP 1: DOWNLOAD ARTIFACT FROM CI RUN
-            # --------------------------------------------
-            - task: DownloadPipelineArtifact@2
-              displayName: 'Download artifact from CI run $(ci_build_id)'
-              inputs:
-                buildType: 'specific'
-                project: '$(System.TeamProjectId)'
-                buildId: '$(ci_build_id)'     # <== CI RUN ID
-                artifactName: '$(artifact_name)'
-                targetPath: '$(Pipeline.Workspace)/asp-artifact'
+        - task: Bash@3
+          displayName: 'Ensure zip installed'
+          inputs:
+            targetType: 'inline'
+            script: |
+              set -e
+              if ! command -v zip >/dev/null 2>&1; then
+                sudo apt-get update
+                sudo apt-get install -y zip
+              fi
 
-            # --------------------------------------------
-            # STEP 2: Install ZIP if missing
-            # --------------------------------------------
-            - task: Bash@3
-              displayName: 'Ensure zip is installed'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  set -e
-                  if ! command -v zip >/dev/null 2>&1; then
-                    sudo apt-get update
-                    sudo apt-get install -y zip
-                  fi
+        - task: Bash@3
+          displayName: 'Create zip package'
+          inputs:
+            targetType: 'inline'
+            script: |
+              ART_DIR="$(Pipeline.Workspace)/asp-artifact"
+              echo "Artifact folder:"
+              ls -la "$ART_DIR"
+              cd "$ART_DIR"
+              zip -r "$(package_path)" . -x "*/node_modules/*"
 
-            # --------------------------------------------
-            # STEP 3: ZIP artifact for App Service
-            # --------------------------------------------
-            - task: Bash@3
-              displayName: 'Create artifact ZIP package'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  set -e
-                  ART_DIR="$(Pipeline.Workspace)/asp-artifact"
+        - bash: |
+            az login --identity
+            az account show
+          displayName: "Azure Login"
 
-                  if [ ! -d "$ART_DIR" ]; then
-                    echo "ERROR: Artifact folder not found!"
-                    exit 1
-                  fi
+        - bash: |
+            echo "Deploying to App Service..."
+            az webapp deployment source config-zip \
+              --resource-group "$(app_resource_group)" \
+              --name "$(app_service_name)" \
+              --src "$(package_path)"
+          displayName: "Deploy ZIP to App Service"
 
-                  cd "$ART_DIR"
-                  rm -f "$(package_path)"
-
-                  zip -r "$(package_path)" . -x "*/node_modules/*"
-
-                  echo "Created ZIP: $(package_path)"
-
-            # --------------------------------------------
-            # STEP 4: LOGIN WITH MANAGED IDENTITY
-            # --------------------------------------------
-            - task: Bash@3
-              displayName: 'Azure Login (Managed Identity)'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  set -e
-                  az login --identity
-                  az account show
-
-            # --------------------------------------------
-            # STEP 5: DEPLOY ZIP TO APP SERVICE
-            # --------------------------------------------
-            - task: Bash@3
-              displayName: 'Deploy ZIP to App Service'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  set -e
-
-                  if [ ! -f "$(package_path)" ]; then
-                    echo "ERROR: package ZIP not found!"
-                    exit 1
-                  fi
-
-                  az webapp deployment source config-zip \
-                    --resource-group "$(app_resource_group)" \
-                    --name "$(app_service_name)" \
-                    --src "$(package_path)"
-
-            # --------------------------------------------
-            # STEP 6: VERIFY APP IS RUNNING
-            # --------------------------------------------
-            - task: Bash@3
-              displayName: 'Verify App Service health'
-              inputs:
-                targetType: 'inline'
-                script: |
-                  set -e
-                  APP_URL="https://$(app_service_name).azurewebsites.net"
-
-                  echo "Checking health at ${APP_URL}"
-
-                  for i in {1..5}; do
-                    status=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/health" || true)
-
-                    echo "Attempt $i: HTTP $status"
-
-                    if [ "$status" = "200" ] || [ "$status" = "302" ]; then
-                      echo "App is healthy!"
-                      exit 0
-                    fi
-
-                    echo "Retrying in 10 seconds..."
-                    sleep 10
-                  done
-
-                  echo "App did not respond successfully!"
-                  exit 1
+        - bash: |
+            APP_URL="https://$(app_service_name).azurewebsites.net"
+            echo "Checking health: $APP_URL/health"
+            curl -I "$APP_URL"
+          displayName: "Verify Deployment"
