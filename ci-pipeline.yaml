@@ -6,8 +6,7 @@ variables:
   environment: 'dev'        # dev or prod
  
 pool:
-  name: azure-agent-pool
- 
+  name: 'pradeep-pool'
 steps:
  
   # Checkout repository
