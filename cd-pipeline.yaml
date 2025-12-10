@@ -100,7 +100,7 @@ stages:
                   --name "$(app_service_name)" \
                   --src "$PKG_PATH"
 
-          # 6. Verify App Service health
+          # 6. Verify App Service health (check / instead of /health)
           - task: Bash@3
             displayName: 'Verify App Service is up'
             inputs:
@@ -112,8 +112,8 @@ stages:
                 i=0
                 until [ $i -ge 5 ]
                 do
-                  status=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/health" || true)
-                  if [ "$status" = "200" ] || [ "$status" = "302" ] || [ "$status" = "000" ]; then
+                  status=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/")
+                  if [[ "$status" -ge 200 && "$status" -lt 400 ]]; then
                     echo "App responded with HTTP $status"
                     exit 0
                   fi
